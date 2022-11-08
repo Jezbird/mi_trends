@@ -1,0 +1,441 @@
+---
+title: "analysis"
+output: html_document
+date: '2022-11-08'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo = FALSE}
+library(raster)
+library(sf)
+library(tidyverse)
+library(dsm)
+library(scico)
+library(ggnewscale)
+```
+
+This markdown file uses corresponding RData files to run the analysis presented in "Bird, J.P., Fuller, R.A. and Shaw, J.D. 2022. Comparing the responses of extant and extirpated seabirds to the world’s largest multi-predator eradication."
+
+It includes production of the figure components presented.
+
+# Invasive species legacy
+The current distribution and abundance of our four study species was analysed using the outputs of two supporting methods papers:
+
+Bird, J.P., Fuller, R.A., Pascoe, P.P. and Shaw, J.D., 2022. Trialling camera traps to determine occupancy and breeding in burrowing seabirds. Remote Sensing in Ecology and Conservation, 8(2), pp.180-190.
+
+Bird, J.P., Terauds, A., Fuller, R.A., Pascoe, P.P., Travers, T.D., McInnes, J.C., Alderman, R. and Shaw, J.D., 2022. Generating unbiased estimates of burrowing seabird populations. Ecography, p.e06204.
+
+First, load data files.
+
+```{r}
+load("analysis_data1.RData")
+load("analysis_data2.RData")
+load("analysis_data3.RData")
+```
+
+## Calculating occupied area for four study species
+
+Model-predictions from density surface models of burrow density for Antarctic Prions and White-headed Petrels were adjusted by occupacy to calculate population density. The number of pixels predicted to support >1 breeding pair was calculated.
+
+```{r}
+# ap prediction
+pr_ap <- as.data.frame(ap_raster, xy = T) %>% 
+         drop_na() %>% 
+         mutate(pd = dsm_ap_nb3 * ap_occ, # multiply by occupancy to model pop rather than burrow density
+                pc = (dsm_ap_nb3 * ap_occ)*400) 
+# 400 is the area of each 20 m x 20 m pixel
+
+# filter only pixels with >1 breeding pair predicted
+pr_apf <- pr_ap %>% filter(pc > 1)
+
+# % occupied area
+tmp <- as.data.frame(ap_raster, xy = T) %>% drop_na()
+(length(pr_apf$dsm_ap_nb3)/length(tmp$dsm_ap_nb3))*100
+```
+
+```{r}
+# whp prediction
+pr_whp <- as.data.frame(whp_raster, xy = T) %>% 
+          drop_na() %>% 
+          mutate(pd = dsm_whp_tw2 * whp_cocc, # multiply by occupancy to map pop rather than burrow density
+                 pc = (dsm_whp_tw2 * whp_cocc)* 400)
+# 400 is the area of each 20 m x 20 m pixel
+
+# filter only pixels with >1 breeding pair predicted
+pr_whpf <- pr_whp %>% filter(pc > 1) 
+
+# % occupied area
+tmp <- as.data.frame(whp_raster, xy = T) %>% drop_na()
+(length(pr_whpf$dsm_whp_tw2)/length(tmp$dsm_whp_tw2))*100
+```
+
+For Blue and Grey Petrels the proportion of pixels occupied in islamd-wide population density layers from targeted search surveys was calculated.
+
+```{r bp stats}
+# of pixels in island-wide grid
+gd <- 3699840
+# % pixels occupied
+(length(gdat_bp$dens)/gd)*100
+```
+
+```{r gp stats}
+# % pixels occupied
+(length(gdat_gp$dens)/gd)*100
+```
+
+## Figure 1
+Figure 1 has a number of components. 
+
+### Plot area
+First, adjusting scales for plotting.
+
+```{r adjusting lat/long scales}
+
+scale_x_longitude <- function(xmin=-180, xmax=180, step=1, ...) {
+    ewbrks <- seq(xmin,xmax,step)
+    ewlbls <- unlist(lapply(ewbrks, function(x) ifelse(x < 0, paste(x, "W"), ifelse(x > 0, paste(x, "E"),x))))
+    return(scale_x_continuous("Longitude", breaks = ewbrks, labels = ewlbls, expand = c(0, 0), ...))
+}
+scale_y_latitude <- function(ymin=-90, ymax=90, step=0.5, ...) {
+    nsbrks <- seq(ymin,ymax,step)
+    nslbls <- unlist(lapply(nsbrks, function(x) ifelse(x < 0, paste(x, "S"), ifelse(x > 0, paste(x, "N"),x))))
+    return(scale_y_continuous("Latitude", breaks = nsbrks, labels = nslbls, expand = c(0, 0), ...))
+}
+```
+
+Reading a spatial layer of the coastline and setting the coordinate reference system.
+
+```{r}
+# set CRS from coast layer
+crs <- st_crs(ccoast)
+# buffer coastline for neater plotting
+ccoast_buff <- st_buffer(ccoast, dist = 800)
+```
+
+### Panel A - relief map
+Create hillshade for the relief map.
+
+```{r}
+# create slope and hillshade
+slope = terrain(dem, opt='slope')
+aspect = terrain(dem, opt='aspect')
+hill = hillShade(slope, aspect, 40, 270)
+```
+
+Generate the first panel - a relief map of Macquarie Island. 
+
+```{r}
+dem_df <- as.data.frame(dem, xy = T) %>% 
+         drop_na()
+hill_df <- as.data.frame(hill, xy = T) %>% 
+         drop_na()
+
+ggplot() +
+               geom_sf(fill = NA, colour = NA, data = ccoast_buff) +
+               geom_raster(aes(x=x, y=y, fill=layer), data = hill_df) + 
+               scale_fill_gradient(low = "black", high = "white") +
+               new_scale_fill() + 
+               geom_raster(aes(x=x, y=y, fill=Macca_dem), data = dem_df, alpha = 0.2) + 
+               scale_fill_gradientn(colours = terrain.colors(10)) + 
+               scale_x_longitude(158.8, 158.9, step = 0.1) +
+               theme_bw()
+```
+
+### Panel B - combined species distribution map
+Species densities were normalised to present all species together
+
+```{r}
+# normalise densities for all spp.
+pr_apr <- pr_apf %>% filter(pd > quantile(pd, 0.025) & pd < quantile(pd, 0.975)) %>% 
+         mutate(pd_norm = (pd-min(pd))/diff(range(pd)))
+pr_whpr <- pr_whpf %>% filter(pd > quantile(pd, 0.025) & pd < quantile(pd, 0.975)) %>% 
+           mutate(pd_norm = (pd-min(pd))/diff(range(pd)))
+gdat_gpr <- gdat_gp %>% filter(dens > quantile(dens, 0.025) & dens < quantile(dens, 0.975)) %>% 
+         mutate(pd_norm = (dens-min(dens))/diff(range(dens)))
+gdat_bpr <- gdat_bp %>% filter(dens > quantile(dens, 0.025) & dens < quantile(dens, 0.975)) %>% 
+         mutate(pd_norm = (dens-min(dens))/diff(range(dens)))
+
+ggplot() +
+    # set-up plot background etc.
+    geom_sf(fill = 'grey25', data = ccoast) +
+    geom_sf(fill = NA, colour = NA, data = ccoast_buff) +
+    scale_x_longitude(158.8, 158.9, step = 0.1) +
+    # add GP layer #440154FF #E0754FFF
+    geom_sf(data = gdat_gpr, aes(col = pd_norm), show.legend = T) +
+    scale_color_gradient(low = "transparent", high = "#440154FF", aesthetics = 'colour') +
+    # add BP layer #33638DFF #2A5934FF
+    new_scale_colour() +
+    geom_sf(data = gdat_bpr, aes(col = pd_norm), show.legend = T) +
+    scale_color_gradient(low = "transparent", high = "#33638DFF", aesthetics = 'colour') +
+    # add WHP layer #3CBB75FF #2B5B99FF
+    new_scale_fill() +
+    geom_raster(aes(x=x, y=y, fill=pd_norm), data = pr_whpr) +
+    scale_fill_gradient(low = "transparent", high = "#3CBB75FF", aesthetics = 'fill') +
+    # add AP layer #FDE725FF #C36D9AFF
+    new_scale_fill() +
+    geom_raster(aes(x=x, y=y, fill=pd_norm), data = pr_apr) +
+    scale_fill_gradient(low = "transparent", high = "#FDE725FF", aesthetics = 'fill') +
+    theme_bw()
+```
+
+### Panel C - F - comparison with 1970s distribution
+
+Brothers (1984) surveyed the whole of Macquarie Island, determining occupancy at a 1km2 grid level and estimating abundance on a five point  scale: abundant, common, sparse, rare, absent, giving estimated quantitative thresholds for each category. 
+
+Re-scaling the density data - Brothers reported the largest colony of White-headed Petrels was 800 pairs. His top bin for WHP is 500 - 'abundant'. It's not clear whether this is the middle of the bin, or a lower bound. Assuming it is a lower bound, I've taken 500/max(800) = ~0.6 as the density cut-off and apply that to our DSM. So, grid cells with >60% of the max cell in the DSM all get a category 4 score 'abundant' - and so on down. 
+
+This approach tells us whether the distribution of the population has expanded or contracted - i.e. does the current population meet equivalent thresholds for 'abundant':'rare' in as many cells as it did in the 1970s. 
+
+#### Panel C
+
+```{r a}
+#Select AP grid squares in 1970s Brothers dataset
+bros_ap <- bros %>% st_centroid() %>% filter(A_Prion_Br != 0)
+
+# Plot map
+ggplot() +
+  geom_sf(fill = 'grey', data = ccoast) +
+  geom_sf(fill = NA, colour = NA, data = ccoast_buff) +
+  geom_sf(data = bros_ap, aes(col = A_Prion_Br)) +
+  scale_color_gradient(low = "#4401541A", high = "#440154FF", aesthetics = 'colour') +
+  scale_x_longitude(158.8, 158.9, step = 0.1) +
+  theme_bw()
+```
+
+#### Panel D
+
+```{r b}
+# Re-sample raster layer of predicted AP density using same grid used by Brothers 
+bros_comp_ap <- bros %>% mutate(ap_pred = raster::extract(ap_raster, ., fun = sum, na.rm = T)) %>% 
+                st_centroid() 
+bros_comp_ap <- bros_comp_ap[order(bros_comp_ap$ap_pred),] %>% mutate(cumsum = cumsum(ap_pred))
+
+# Define quantiles for classifying predicted density
+ap_q1 <- bros_q %>% filter(species=="ap", !is.na(percentile_sq))
+ap_q1 <- ap_q1[[4]]
+
+# Classify predicted density
+bros_comp_ap <- bros_comp_ap %>% mutate(q1 = case_when(ap_pred > (max(ap_pred) * ap_q1[1]) ~ 4,
+                                                       ap_pred > (max(ap_pred) * ap_q1[2]) ~ 3,
+                                                       ap_pred > (max(ap_pred) * ap_q1[3]) ~ 2,
+                                                       ap_pred > (max(ap_pred) * ap_q1[4]) ~ 1,
+                                                       TRUE ~ 0))
+# Plot map
+ggplot(data = filter(bros_comp_ap, q1 != 0)) +
+                     geom_sf(fill = 'grey', data = ccoast) +
+                     geom_sf(fill = NA, colour = NA, data = ccoast_buff) +
+                     geom_sf(aes(col = q1), show.legend = T) +
+                     scale_color_gradient(low = "#4401541A", high = "#440154FF",
+                                          aesthetics = 'colour') +
+                     scale_x_longitude(158.8, 158.9, step = 0.1) +
+                     theme_bw()
+```
+
+#### Panel E
+
+```{r c}
+#Select WHP grid squares in 1970s Brothers dataset
+bros_whp <- bros %>% st_centroid() %>% filter(WH_Petrel_ != 0)
+
+# Plot map
+ggplot() +
+  geom_sf(fill = 'grey', data = ccoast) +
+  geom_sf(fill = NA, colour = NA, data = ccoast_buff) +
+  geom_sf(data = bros_whp, aes(col = WH_Petrel_), show.legend = T) +
+  scale_color_gradient(low = "#FDE7251A", high = "#FDE725FF", aesthetics = 'colour') +
+  scale_x_longitude(158.8, 158.9, step = 0.1) +
+  theme_bw()
+```
+
+#### Panel F
+
+```{r WHP vs Brothers - method 1}
+# Re-sample raster layer of predicted WHP density using same grid used by Brothers
+bros_comp_whp <- bros %>% mutate(whp_pred = 400*(raster::extract(whp_raster, ., fun = sum, na.rm = T))) %>% 
+                st_centroid()
+bros_comp_whp <- bros_comp_whp[order(bros_comp_whp$whp_pred),] %>% mutate(cumsum = cumsum(whp_pred))
+
+# Define quantiles for classifying predicted density
+whp_q1 <- bros_q %>% filter(species=="whp", !is.na(percentile_sq))
+whp_q1 <- whp_q1[[4]]
+
+# Classify predicted density
+bros_comp_whp <- bros_comp_whp %>% mutate(q1 = case_when(whp_pred > (max(whp_pred) * whp_q1[1]) ~ 4,
+                                                       whp_pred > (max(whp_pred) * whp_q1[2]) ~ 3,
+                                                       whp_pred > (max(whp_pred) * whp_q1[3]) ~ 2,
+                                                       whp_pred > (max(whp_pred) * whp_q1[4]) ~ 1,
+                                                       TRUE ~ 0))
+# Plot map
+ggplot(data = filter(bros_comp_whp, q1 != 0)) +
+  geom_sf(fill = 'grey', data = ccoast) +
+  geom_sf(fill = NA, colour = NA, data = ccoast_buff) +
+  geom_sf(aes(col = q1), show.legend = T) +
+  scale_color_gradient(low = "#FDE7251A", high = "#FDE725FF", aesthetics = 'colour') +
+  scale_x_longitude(158.8, 158.9, step = 0.1) +
+  theme_bw()
+```
+
+
+# Why do recovery trajectories differ?
+
+## Trends from long-term monitoring data
+
+### Figure 2
+
+#### Panel A
+Generalized Additive Model smooths of burrow numbers in monitoring plots
+
+```{r brw ct}
+# include species as a factor, individual species-level smooths of year, and site as a random effect
+gam_1 <- dat %>% filter(!is.na(brw_ct)) %>% 
+         gam(brw_ct ~ species + 
+                      s(year, by = species, bs = "tp", m=2) + 
+                      s(site, bs="re"), data = ., family = "nb")
+
+# check gam performance
+summary(gam_1)
+par(mfrow = c(2,2))
+gam.check(gam_1)
+
+# predict terms for each species
+pred <- data.frame(year = seq(min(1988), max(2018), length.out = 1001)) %>% 
+            mutate(species = gl(4, 1, length = 1001, 
+                             labels = c("AP","BP","GP","WHP")),
+                   site = gl(4, 1, length = 1001, 
+                             labels = c("Hill 291","Sodomy West","Douglas Pt North","Douglas Pt South"))) %>% 
+            cbind(predict(gam_1, se.fit = TRUE, ., type = "terms", exclude = "s(site)"))
+
+predfit <- pred %>% pivot_longer(cols = c(5:8), names_to = "sp", values_to = "fit") %>% 
+           left_join(pred %>% pivot_longer(cols = c(10:13), names_to = "sp1", values_to = "se")) %>% 
+           filter(fit != 0 & se != 0, species != "GP" | year > 2001, species != "BP" | year > 2000) %>% 
+           dplyr::select(year, species, fit, se)
+
+# plot combined marginal effects plot of trends for all species
+ggplot(data = predfit, aes(year, fit)) +
+  geom_line(aes(colour = species)) +
+  geom_ribbon(aes(x = year, ymin = fit - se, ymax = fit + se, fill = species), alpha = 0.1) +
+  scale_colour_viridis_d(aesthetics = c("colour", "fill")) +
+  theme_bw()
+```
+
+#### Panel B
+Generalized Additive Model smooths of breeding success in monitoring plots
+
+```{r br succ}
+# set up breeding data
+brd <- dat %>% filter(!is.na(fledge)) %>% 
+               group_by(species, year) %>% 
+               summarise(br_attempt = sum(br_attempt),
+                         fledge = sum(fledge),
+                         fail = sum(fail),
+                         fl_fa = sum(fl_fa)) %>% 
+               mutate(br_succ = fledge/(fledge + fail),
+                      br_succ_min = (fledge/br_attempt),
+                      br_succ_max = ((fledge + !is.na(fl_fa))/br_attempt),
+                      era = case_when(year < 1995 ~ "cats",
+                                      TRUE ~ "nocats"))
+
+# gam of breeding success by species by year. Era is pre and post cat eradication
+gam_2 <- gam(cbind(fledge, fail) ~ species + era + s(year, by = species, bs = "tp", m=2), data = brd, family = "binomial", method = "REML")
+
+# check gam performance
+summary(gam_2)
+gam.check(gam_2)
+
+# use the model to predict breeding success across the whole time series
+suc_pred <- data.frame(year = seq(min(1960), max(2018), length.out = 1001)) %>%
+            mutate(species = gl(2, 1, length = 1001, 
+                             labels = c("GP","WHP")),
+                   era = case_when(year < 1996 ~ "cats",
+                                   TRUE ~ "nocats")) %>% 
+            cbind(predict(gam_2, se.fit = TRUE, ., type = "link"))
+suc_pred$fitn <- gam_2$family$linkinv(suc_pred$fit)
+suc_pred$upr <- gam_2$family$linkinv(suc_pred$fit + 2*suc_pred$se.fit)
+suc_pred$lwr <- gam_2$family$linkinv(suc_pred$fit - 2*suc_pred$se.fit)
+suc_pred <- suc_pred %>% filter(species != "GP" | year > 2001)
+
+# points to include on the plot
+pts <- brd %>% dplyr::select(year, fitn=br_succ) #%>% filter(year > 1975)
+
+# plot breeding success
+ggplot(suc_pred, aes(year, fitn)) +
+        annotate(geom = "rect", xmin = 1996, xmax = 2000.45, ymin = 0, ymax = 1, alpha = .2) +
+        annotate(geom = "rect", xmin = 2000.4, xmax = 2000.5, ymin = 0, ymax = 1) +
+        annotate(geom = "rect", xmin = 2004, xmax = 2010.45, ymin = 0, ymax = 1, alpha = .2) +
+        annotate(geom = "rect", xmin = 2010.45, xmax = 2011.45, ymin = 0, ymax = 1, alpha = .8) +
+        geom_ribbon(aes(ymin=lwr,ymax=upr, fill = species), alpha=.1) +
+        #geom_line(aes(year, lwr), linetype = "dotted") +
+        #geom_line(aes(year, upr), linetype = "dotted") +
+        geom_point(data=pts, aes(x=year, y=fitn, colour = species)) +
+        geom_line(aes(colour = species)) +
+        scale_colour_discrete(type = c("#35B779FF", "#FDE725FF"), aesthetics = c("colour", "fill")) +
+        #geom_line(data=pts, aes(x=year, y=fitn), linetype = "dotted", alpha=.5) +
+        xlab("Year") +
+        ylab("Breeding success") +
+        theme_bw()
+```
+
+### Lambda
+Population growth rates from the model were calculated in excel. See lambda.xlsx
+
+### Figure 3
+Density plots of environmental features used by each species. Environmental data are extracted from a raster stack containing layers for elevation, ndvi, aspect, slope, ridge, topographic wetness and windiness on Macquarie Island.
+
+```{r}
+# Antarctic Prion density and environmental values
+hab_ap <- seg_ap %>% mutate(dens = predict(dsm_ap_nb3, type = "response"),
+                            aob_d = dens * ap_occ, 
+                            sp = "Antarctic Prion") %>% 
+          pivot_longer(cols = c(dem, ndvi, aspect, slope, ridge, wetness, wind), names_to = "var",
+                       values_to = "val") %>% 
+          dplyr::select(sp, aob_d, var, val)
+```
+
+```{r}
+# White-headed Petrel density and environmental values
+hab_whp <- seg_whp %>% mutate(dens = predict(dsm_whp_tw2, type = "response"),
+                            aob_d = dens * whp_cocc,
+                            sp = "White-headed Petrel") %>% 
+           pivot_longer(cols = c(dem, ndvi, aspect, slope, ridge, wetness, wind), names_to = "var",
+                       values_to = "val") %>% 
+           dplyr::select(sp, aob_d, var, val)
+```
+
+```{r}
+bp_gdot <- st_centroid(gdat_bp)
+
+# Blue Petrel density and environmental values
+hab_bp <- as.data.frame(raster::extract(sta, bp_gdot)) %>% bind_cols(bp_gdot) %>% 
+          dplyr::select(dens, dem, ndvi, slope, aspect, ridge, wetness, wind) %>% 
+          pivot_longer(cols = -dens, names_to = "var",
+                       values_to = "val") %>% 
+          mutate(sp = "Blue Petrel") %>% 
+          dplyr::select(sp, aob_d = dens, var, val)
+```
+
+```{r}
+gp_gdot <- st_centroid(gdat_gp)
+
+# Grey Petrel density and environmental values
+hab_gp <- as.data.frame(raster::extract(sta, gp_gdot)) %>% bind_cols(gp_gdot) %>% 
+          dplyr::select(dens, dem, ndvi, slope, aspect, ridge, wetness, wind) %>% 
+          pivot_longer(cols = -dens, names_to = "var",
+                       values_to = "val") %>% 
+          mutate(sp = "Grey Petrel") %>% 
+          dplyr::select(sp, aob_d = dens, var, val)
+```
+
+```{r}
+# Combined environmental values for all species
+hab <- bind_rows(hab_ap, hab_whp, hab_bp, hab_gp)
+
+ggplot() +
+  geom_density(data = hab, aes(val, group = sp, weight=aob_d, fill = sp), alpha = 0.3) +
+  facet_wrap(~var, scale = "free") +
+  scale_fill_viridis_d() +
+  theme_bw()
+```
+
